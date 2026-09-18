@@ -1,0 +1,31 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "vocabking",
+  "main": "src/entrypoint.py",
+  "compatibility_date": "2026-09-08",
+  "compatibility_flags": ["python_workers"],
+  "vars": {
+    // Telegram user ID of the bot owner (whitelist). Get yours from @userinfobot.
+    // TODO: replace with your real ID before deploy — "0" disables the bot.
+    "OWNER_ID": "111",
+    "OWNER_CHAT_ID": "111",
+    "TZ_OFFSET_HOURS": "7"
+  },
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "VOCAB_DO",
+        "class_name": "VocabularyDO"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["VocabularyDO"]
+    }
+  ],
+  "observability": {
+    "enabled": true
+  }
+}

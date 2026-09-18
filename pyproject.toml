@@ -1,0 +1,18 @@
+[project]
+name = "vocabking"
+version = "0.1.0"
+description = "Vocaboss - personalized Telegram vocabulary bot with FSRS, running on Cloudflare Workers (Python)"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "fsrs",
+]
+[dependency-groups]
+dev = [
+    "workers-py",
+    "workers-runtime-sdk",
+    "pytest",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
