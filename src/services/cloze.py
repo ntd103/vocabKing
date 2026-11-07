@@ -53,12 +53,16 @@ def _is_correct(word: str, answer: str) -> bool:
     return normalize(word) == normalize(answer)
 
 
+_VOWELS = set("aeiouyAEIOUY")
+
+
 def reveal_letters(word: str, masked: str, count: int, seed: int) -> str:
     """Reveal up to `count` masked letters in `masked`, chosen to be spread out
     from each other and from already-revealed letters (hangman-style).
 
-    Deterministic given `seed` (card id + reveal count) so re-rendering the same
-    state is stable. Returns the original masked string if nothing left to reveal.
+    Among equally-far candidates, vowels win: they carry the word's skeleton,
+    so the hint helps more (Wordle-solver lineage: vowels first). Ties beyond
+    that are broken by the seeded RNG. Deterministic given `seed`.
     """
     revealed = [i for i, ch in enumerate(masked) if ch != MASK_CHAR]
     candidates = [i for i in _letter_indices(word) if masked[i] == MASK_CHAR]
@@ -69,20 +73,21 @@ def reveal_letters(word: str, masked: str, count: int, seed: int) -> str:
     chosen: list[int] = []
     pool = list(candidates)
     while pool and len(chosen) < count:
-        # Score: prefer candidates far from all revealed/chosen positions.
+        # Score: farthest anchor first, vowel bonus second, RNG last.
         anchors = revealed + chosen
         scored = [
             (
                 min(abs(i - a) for a in anchors) if anchors else float("inf"),
+                1 if word[i] in _VOWELS else 0,
                 rng.random(),  # tie-break randomly but deterministically
                 i,
             )
             for i in pool
         ]
-        scored.sort(key=lambda t: (t[0], t[1]))
-        best = scored[-1]  # farthest anchor wins
-        chosen.append(best[2])
-        pool.remove(best[2])
+        scored.sort(key=lambda t: (t[0], t[1], t[2]))
+        best = scored[-1]  # farthest anchor wins; vowel breaks the tie
+        chosen.append(best[3])
+        pool.remove(best[3])
 
     chars = list(masked)
     for i in chosen:

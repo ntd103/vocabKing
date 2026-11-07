@@ -3,7 +3,7 @@
 import random
 
 import texts
-from keyboards import SHOW_ANSWER_KB, fmt_rate_kb
+from keyboards import fmt_rate_kb
 from services import cloze, fsrs_service
 from telegram import edit_message, send_message
 
@@ -15,55 +15,61 @@ def _pick_mode(do) -> str:
     return mode
 
 
-def _pick_due(do):
-    now = do._now().isoformat()
-    rows = list(
-        do.storage.sql.exec(
-            "SELECT id, word_id, card_json, due FROM cards WHERE due <= ? ORDER BY due LIMIT 1",
-            now,
-        )
-    )
-    return rows[0] if rows else None
-
-
 async def start_study(do, chat_id):
-    card_row = _pick_due(do)
+    if do.review_quota_left() <= 0:
+        added, reviewed = do.daily_counts()
+        await send_message(do.env, chat_id,
+                           texts.STUDY_QUOTA_DONE.format(target=do.target()))
+        return
+    card_row = do._pick_due_random()
     if card_row is None:
-        await send_message(do.env, chat_id, texts.STUDY_NONE_DUE)
+        _, reviewed = do.daily_counts()
+        await send_message(do.env, chat_id,
+                           texts.STUDY_NONE_DUE.format(done=reviewed, target=do.target()))
         return
     word = do.word_row(card_row.word_id)
     await send_prompt(do, chat_id, card_row, word)
 
 
 async def send_prompt(do, chat_id, card_row, word):
-    """Send a review prompt for one card; store the session on the message."""
+    """Send a review prompt for one card; store the session on the message.
+
+    reminder_mode == "full": show everything up-front, user still rates.
+    reminder_mode == "quiz": definition or cloze question, answer then rate.
+    """
+    if do.setting("reminder_mode") == "full":
+        body = texts.FULL_REMINDER.format(
+            word=word.word, phonetic=_phon(word),
+            meaning=word.meaning or "—", example=word.example or "—",
+        )
+        sent = await send_message(do.env, chat_id, body,
+                                  reply_markup=fmt_rate_kb(card_row.id))
+        message_id = sent.get("result", {}).get("message_id")
+        if message_id:
+            do.put_session(message_id, {
+                "card_id": card_row.id, "word_id": word.id,
+                "mode": "full", "masked": None, "reveals": 0,
+                "message_id": message_id,
+            })
+        return
+
     mode = _pick_mode(do)
     if mode == "cloze" and word.example:
         masked = cloze.mask_word(word.example)
         hint = word.meaning or word.word
         text = cloze.render_cloze_prompt(masked, hint) + "\n\n" + texts.REPLY_HINT
         session = {
-            "card_id": card_row.id,
-            "word_id": word.id,
-            "mode": "cloze",
-            "masked": masked,
-            "reveals": 0,
+            "card_id": card_row.id, "word_id": word.id,
+            "mode": "cloze", "masked": masked, "reveals": 0,
         }
     else:
-        text = texts.DEFINITION_PROMPT.format(
-            word=word.word, phonetic=f"/{word.phonetic.strip('/')}/" if word.phonetic else "",
-        ) + "\n\n" + texts.REPLY_HINT
+        text = texts.DEFINITION_PROMPT.format(word=word.word, phonetic=_phon(word)) \
+            + "\n\n" + texts.REPLY_HINT
         session = {
-            "card_id": card_row.id,
-            "word_id": word.id,
-            "mode": "definition",
-            "masked": None,
-            "reveals": 0,
+            "card_id": card_row.id, "word_id": word.id,
+            "mode": "definition", "masked": None, "reveals": 0,
         }
-    sent = await send_message(
-        do.env, chat_id, text,
-        reply_markup=SHOW_ANSWER_KB if session["mode"] == "definition" else None,
-    )
+    sent = await send_message(do.env, chat_id, text)
     message_id = sent.get("result", {}).get("message_id")
     if message_id:
         session["message_id"] = message_id
@@ -73,7 +79,7 @@ async def send_prompt(do, chat_id, card_row, word):
 async def on_reply(do, chat_id, reply_to_id, text) -> bool:
     """Handle a reply to an active review prompt. Returns True if handled."""
     session = do.get_session(reply_to_id)
-    if session is None:
+    if session is None or session.get("mode") == "full":
         return False
     word = do.word_row(session["word_id"])
     if word is None:
@@ -99,9 +105,11 @@ async def on_reply(do, chat_id, reply_to_id, text) -> bool:
         if cloze.fully_revealed(word.example, session["masked"]):
             do.pop_session(reply_to_id)
             body += "\n\n" + texts.CLOZE_FULL.format(
-                word=word.word, phonetic=_phon(word), example=word.example, meaning=word.meaning or "—",
+                word=word.word, phonetic=_phon(word), example=word.example,
+                meaning=word.meaning or "—",
             )
-            await edit_message(do.env, chat_id, reply_to_id, body, reply_markup=fmt_rate_kb(session["card_id"]))
+            await edit_message(do.env, chat_id, reply_to_id, body,
+                               reply_markup=fmt_rate_kb(session["card_id"]))
             return True
         body += "\n\n" + texts.REPLY_HINT
         await edit_message(do.env, chat_id, reply_to_id, body)
@@ -116,10 +124,12 @@ async def on_reply(do, chat_id, reply_to_id, text) -> bool:
     else:
         body = texts.DEFINITION_ANSWER.format(
             word=word.word, phonetic=_phon(word),
-            meaning=word.meaning or "—", example=word.example or "—", note=word.note or "",
+            meaning=word.meaning or "—", example=word.example or "—",
+            note=word.note or "",
         )
     do.pop_session(reply_to_id)
-    await edit_message(do.env, chat_id, reply_to_id, body, reply_markup=fmt_rate_kb(session["card_id"]))
+    await edit_message(do.env, chat_id, reply_to_id, body,
+                       reply_markup=fmt_rate_kb(session["card_id"]))
     return True
 
 
@@ -147,22 +157,26 @@ async def rate(do, chat_id, message_id, card_id, rating_name: str):
     updated, days = fsrs_service.review(card, rating_name)
     do.save_card(card_id, updated)
     do.log_review(card_id, rating_name)
+    do.daily_review(1)
     do.pop_session(message_id)
-    # New due may be the soonest of all cards — realign the alarm right away,
-    # instead of leaving the old (possibly far) alarm until it fires.
+    # New due may be the soonest of all cards — realign the alarm right away.
     do._reschedule()
 
     word = do.word_row(card_row.word_id)
+    added, reviewed = do.daily_counts()
     body = texts.RATED_FEEDBACK.format(
         word=word.word if word else "?",
         rating=texts.RATE_NAMES.get(rating_name, rating_name),
         interval=texts.interval_human(days),
+        done=added + reviewed,
+        target=do.target(),
     )
     await edit_message(do.env, chat_id, message_id, body)
 
-    # continuous studying: immediately prompt the next due card, if any
-    nxt = _pick_due(do)
-    if nxt is not None and nxt.id != card_id:
-        nw = do.word_row(nxt.word_id)
-        if nw is not None:
-            await send_prompt(do, chat_id, nxt, nw)
+    # continuous studying: next due card, if quota remains
+    if do.review_quota_left() > 0:
+        nxt = do._pick_due_random()
+        if nxt is not None and nxt.id != card_id:
+            nw = do.word_row(nxt.word_id)
+            if nw is not None:
+                await send_prompt(do, chat_id, nxt, nw)

@@ -42,9 +42,17 @@ CREATE TABLE IF NOT EXISTS reviews (
   rating INTEGER NOT NULL,
   reviewed_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS daily (
+  date TEXT PRIMARY KEY,
+  added INTEGER NOT NULL DEFAULT 0,
+  reviewed INTEGER NOT NULL DEFAULT 0
+);
 """
 
-DEFAULTS = {"quiet_start": "23", "quiet_end": "7", "mode": "mix"}
+DEFAULTS = {
+    "quiet_start": "23", "quiet_end": "7", "mode": "mix",
+    "daily_target": "200", "reminder_mode": "quiz",
+}
 
 EDIT_FIELD_LABELS = {
     "word": "Từ", "phonetic": "Phiên âm", "meaning": "Nghĩa",
@@ -91,8 +99,13 @@ class VocabularyDO(DurableObject):
 
     def put_setting(self, key: str, value: str):
         self.storage.kv.put(f"set:{key}", value)
-        if self._settings is not None:
-            self._settings[key] = value
+        # Always refresh the cache, even if it wasn't loaded yet — otherwise a
+        # later setting() call would serve the stale pre-write snapshot.
+        if self._settings is None:
+            self._settings = {
+                k: (self.storage.kv.get(f"set:{k}") or v) for k, v in DEFAULTS.items()
+            }
+        self._settings[key] = value
 
     # ---------- quiet hours ----------
 
@@ -158,10 +171,16 @@ class VocabularyDO(DurableObject):
             await review.rate(self, chat_id, message_id, int(parts[1]), parts[2])
         elif parts[0] == "show" and len(parts) == 2:
             await review.show_answer(self, chat_id, message_id, int(parts[1]))
-        elif parts[0] == "add":
+        elif parts[0] == "add" and parts[1] in ("confirm", "cancel"):
             await add.on_confirm(self, chat_id, message_id, parts[1])
+        elif parts[0] == "add" and parts[1] in ("lookup", "manual"):
+            await add.on_mode_pick(self, chat_id, message_id, parts[1])
         elif parts[0] == "menu":
-            await self.on_menu(chat_id, parts[1])
+            await self.on_menu(chat_id, parts[1], message_id)
+        elif parts[0] == "game" and parts[1] == "story":
+            from handlers import games
+
+            await games.story_ask_count(self, chat_id, message_id)
         elif parts[0] == "editf" and len(parts) == 3:
             await edit.pick_field(self, chat_id, int(parts[1]), parts[2])
         elif parts[0] == "editw" and len(parts) == 2:
@@ -178,16 +197,52 @@ class VocabularyDO(DurableObject):
             await settings.set_mode(self, chat_id, message_id, parts[1])
         elif parts[0] == "quiet" and len(parts) >= 2:
             await settings.set_quiet(self, chat_id, message_id, ":".join(parts[1:]))
+        elif parts[0] == "set" and len(parts) == 2:
+            await settings.show_section(self, chat_id, message_id, parts[1])
+        elif parts[0] == "remmode" and len(parts) == 2:
+            await settings.set_reminder_mode(self, chat_id, message_id, parts[1])
+        elif parts[0] == "lkex" and len(parts) == 2:
+            from handlers import lookup
 
-    async def on_menu(self, chat_id, what: str):
+            await lookup.on_example_choice(self, chat_id, message_id, parts[1])
+        elif parts[0] == "lksv" and len(parts) == 2:
+            from handlers import lookup
+
+            await lookup.on_save(self, chat_id, message_id, parts[1])
+
+    async def on_menu(self, chat_id, what: str, message_id=None):
+        from telegram import edit_message
+
+        if what == "home":
+            if message_id:
+                await edit_message(self.env, chat_id, message_id, texts.MENU, reply_markup=MENU_KB)
+            else:
+                await send_message(self.env, chat_id, texts.MENU, reply_markup=MENU_KB)
+            return
+        if what == "help":
+            from keyboards import kb_back_menu
+
+            if message_id:
+                await edit_message(self.env, chat_id, message_id, texts.HELP,
+                                   reply_markup=kb_back_menu())
+            else:
+                await send_message(self.env, chat_id, texts.HELP, reply_markup=kb_back_menu())
+            return
+        if what == "games":
+            from keyboards import GAMES_MENU_KB
+
+            await edit_message(self.env, chat_id, message_id, texts.GAMES_MENU,
+                               reply_markup=GAMES_MENU_KB)
+            return
+        if what == "add":
+            await add.show_menu(self, chat_id, message_id)
+            return
         commands = {
-            "study": "/study", "add": "/add", "edit": "/edit",
+            "study": "/study", "edit": "/edit",
             "delete": "/delete", "settings": "/settings",
         }
         if what in commands:
             await self.handle_command(chat_id, commands[what])
-        elif what == "help":
-            await send_message(self.env, chat_id, texts.HELP)
 
     async def on_message(self, msg: dict):
         chat_id = msg["chat"]["id"]
@@ -203,7 +258,7 @@ class VocabularyDO(DurableObject):
         if text.startswith("/"):
             return await self.handle_command(chat_id, text)
 
-        # active dialog (add / search-by-keyword / edit-value)?
+        # active dialog (add / search-by-keyword / edit-value / lookup / game)?
         fsm = self.storage.kv.get(f"fsm:{chat_id}")
         if fsm:
             flow = fsm.get("flow")
@@ -214,6 +269,22 @@ class VocabularyDO(DurableObject):
                 return await do_search(self, chat_id, text)
             if flow == "edit_value":
                 return await edit.on_value(self, chat_id, fsm, text)
+            if flow == "set_target":
+                return await settings.on_target_input(self, chat_id, text)
+            if flow in ("lookup_vi", "lookup_example_manual"):
+                from handlers import lookup
+
+                return await lookup.on_text_input(self, chat_id, fsm, text)
+            if flow == "game_story_count":
+                from handlers import games
+
+                return await games.story_on_count(self, chat_id, text)
+
+        # bare English word → dictionary lookup shortcut
+        if text.isascii() and text.replace("-", "").replace("'", "").isalpha():
+            from handlers import lookup
+
+            return await lookup.start(self, chat_id, text.lower())
 
         await send_message(self.env, chat_id, texts.HINT_ROOT)
 
@@ -236,6 +307,10 @@ class VocabularyDO(DurableObject):
             await delete.start(self, chat_id, arg.strip())
         elif cmd == "/settings":
             await settings.show(self, chat_id)
+        elif cmd == "/games":
+            from handlers import games
+
+            await games.show_menu(self, chat_id)
         elif cmd == "/cancel":
             self.set_fsm(chat_id, None)
             await send_message(self.env, chat_id, "Đã huỷ thao tác đang dở.")
@@ -356,13 +431,66 @@ class VocabularyDO(DurableObject):
         now = now_utc()
         if self.is_quiet(now):
             return  # _reschedule() sets the wake-up alarm
-        card_row = self._pick_due()
+        card_row = self._pick_due_random()
         if card_row is None:
-            return
+            return  # nothing due, or today's quota spent
         word = self.word_row(card_row.word_id)
         if word is None:
             return
         await review.send_prompt(self, self.env.OWNER_CHAT_ID, card_row, word)
+
+    # ---------- daily target ----------
+
+    def today_local(self) -> str:
+        """Local date string (YYYY-MM-DD) using the configured TZ offset."""
+        local = now_utc() + timedelta(hours=self._tz_offset())
+        return local.strftime("%Y-%m-%d")
+
+    def daily_counts(self) -> tuple[int, int]:
+        """(added, reviewed) for today. Creates the row lazily."""
+        d = self.today_local()
+        rows = list(self.storage.sql.exec(
+            "SELECT added, reviewed FROM daily WHERE date = ?", d
+        ))
+        return (rows[0].added, rows[0].reviewed) if rows else (0, 0)
+
+    def daily_add(self, n: int = 1):
+        d = self.today_local()
+        self.storage.sql.exec(
+            "INSERT INTO daily (date, added, reviewed) VALUES (?, ?, 0)"
+            " ON CONFLICT(date) DO UPDATE SET added = added + ?",
+            d, n, n,
+        )
+
+    def daily_review(self, n: int = 1):
+        d = self.today_local()
+        self.storage.sql.exec(
+            "INSERT INTO daily (date, added, reviewed) VALUES (?, 0, ?)"
+            " ON CONFLICT(date) DO UPDATE SET reviewed = reviewed + ?",
+            d, n, n,
+        )
+
+    def target(self) -> int:
+        try:
+            return max(1, int(self.setting("daily_target")))
+        except ValueError:
+            return 200
+
+    def review_quota_left(self) -> int:
+        """Review slots left today: target minus words added minus reviews done."""
+        added, reviewed = self.daily_counts()
+        return max(0, self.target() - added - reviewed)
+
+    def _pick_due_random(self):
+        """One random due card within today's remaining review quota."""
+        if self.review_quota_left() <= 0:
+            return None
+        rows = list(self.storage.sql.exec(
+            "SELECT id, word_id, card_json, due FROM cards WHERE due <= ?"
+            " ORDER BY RANDOM() LIMIT 1",
+            now_utc().isoformat(),
+        ))
+        return rows[0] if rows else None
 
     # ---------- review session persistence ----------
 

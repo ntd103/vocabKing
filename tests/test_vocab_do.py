@@ -98,6 +98,8 @@ class TestAddFlow:
     def test_add_via_fsm_input(self):
         do = _fresh()
         feed_msg(do, "/add")
+        assert "thêm từ" in last_text(do).lower()  # menu with lookup/manual options
+        feed_cb(do, "add:manual")
         assert "mỗi dòng" in last_text(do).lower()
         feed_msg(do, "solo|/soʊ/|một mình")
         feed_cb(do, "add:confirm")
@@ -116,7 +118,7 @@ class TestDefinitionReviewFlow:
     def _add_and_prompt(self, do):
         feed_msg(do, "/add hello|/həˈloʊ/|xin chào|Hi Paul|friendly")
         feed_cb(do, "add:confirm")
-        do.storage.kv.put("set:mode", "definition")
+        do.put_setting("mode", "definition")
         do.env.sent.clear()
         feed_msg(do, "/study")
         # find the prompt message (definition prompt asks "Nghĩa là gì?")
@@ -128,15 +130,16 @@ class TestDefinitionReviewFlow:
     def test_study_sends_prompt(self):
         do = _fresh()
         self._add_and_prompt(do)
-        kb = do.env.sent[-1]["payload"]["reply_markup"]["inline_keyboard"]
-        assert kb[0][0]["callback_data"].startswith("show:")
+        # definition prompt has no keyboard (user replies with text)
+        assert "Nghĩa là gì" in last_text(do)
 
     def test_show_answer_then_rate(self):
         do = _fresh()
         prompt_id = self._add_and_prompt(do)
         card_id = 1
         do.env.sent.clear()
-        feed_cb(do, f"show:{card_id}", message_id=prompt_id)
+        # user replies to the prompt; bot reveals the answer with rate buttons
+        feed_msg(do, "không biết", reply_to=prompt_id)
         assert "Nghĩa:" in last_text(do) and "xin chào" in last_text(do)
         # rate good
         old_due = dt.datetime.fromisoformat(do.get_card(card_id).due)
@@ -159,7 +162,7 @@ class TestClozeFlow:
     def _add_example_and_prompt(self, do):
         feed_msg(do, "/add apple|/ˈæp.əl/|quả táo|An apple a day keeps the doctor away")
         feed_cb(do, "add:confirm")
-        do.storage.put("set:mode", "cloze")
+        do.put_setting("mode", "cloze")
         do.env.sent.clear()
         feed_msg(do, "/study")
         prompts = [s for s in do.env.sent if "Điền từ" in s["payload"].get("text", "")]
@@ -242,8 +245,8 @@ class TestQuietHours:
 
     def test_quiet_off(self):
         do = _fresh()
-        do.storage.put("set:quiet_start", "1")
-        do.storage.put("set:quiet_end", "1")
+        do.put_setting("quiet_start", "1")
+        do.put_setting("quiet_end", "1")
         assert not do.is_quiet(dt.datetime.now(dt.timezone.utc))
 
     def test_wake_time_delays_to_morning(self):
@@ -301,8 +304,8 @@ class TestAlarmFlow:
         do = _fresh()
         feed_msg(do, "/add w1|m1")
         feed_cb(do, "add:confirm")
-        do.storage.kv.put("set:quiet_start", "1")
-        do.storage.kv.put("set:quiet_end", "1")  # quiet off (1..1)
+        do.put_setting("quiet_start", "1")
+        do.put_setting("quiet_end", "1")  # quiet off (1..1)
         do.env.sent.clear()
         asyncio.run(do.alarm())
         texts = sent_texts(do.env)
