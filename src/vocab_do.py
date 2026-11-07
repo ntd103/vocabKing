@@ -71,6 +71,10 @@ class VocabularyDO(DurableObject):
         for k, v in DEFAULTS.items():
             if self.storage.kv.get(f"set:{k}") is None:
                 self.storage.kv.put(f"set:{k}", v)
+        # In-memory settings cache: this DO is the only writer and instances
+        # are long-lived, so re-reading KV per call is pure waste. Reset to
+        # None on DO eviction (fresh instance) — self-healing.
+        self._settings: dict | None = None
 
     def _now(self) -> datetime:
         return now_utc()
@@ -78,7 +82,17 @@ class VocabularyDO(DurableObject):
     # ---------- settings ----------
 
     def setting(self, key: str) -> str:
-        return self.storage.kv.get(f"set:{key}") or DEFAULTS.get(key)
+        s = self._settings
+        if s is None:
+            s = self._settings = {
+                k: (self.storage.kv.get(f"set:{k}") or v) for k, v in DEFAULTS.items()
+            }
+        return s[key]
+
+    def put_setting(self, key: str, value: str):
+        self.storage.kv.put(f"set:{key}", value)
+        if self._settings is not None:
+            self._settings[key] = value
 
     # ---------- quiet hours ----------
 
@@ -238,22 +252,36 @@ class VocabularyDO(DurableObject):
 
     # ---------- words / cards helpers ----------
 
-    def insert_word(self, user_id: int, entry: dict) -> int:
-        self.storage.sql.exec(
+    def insert_words_bulk(self, user_id: int, entries: list[dict]) -> int:
+        """Insert many words (+ a fresh FSRS card each) in constant storage ops.
+
+        One multi-row INSERT ... RETURNING per table (~3N rows written in 2
+        calls) instead of the old per-word INSERT + SELECT MAX(id) loop (3N
+        round-trips + a full-table MAX scan per word). Safe to combine: each
+        rows statement is atomic, and SQLite runs them sequentially.
+        """
+        if not entries:
+            return 0
+        now = now_utc().isoformat()
+        card_json = fsrs_service.new_card_json()
+        cols = ", ".join(f"(?,?,?,?,?,?,?)" for _ in entries)
+        flat = [
+            v
+            for e in entries
+            for v in (user_id, e["word"], e["phonetic"], e["meaning"],
+                      e["example"], e["note"], now)
+        ]
+        ids = [r.id for r in self.storage.sql.exec(
             "INSERT INTO words (user_id, word, phonetic, meaning, example, note, created_at)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?)",
-            user_id, entry["word"], entry["phonetic"], entry["meaning"],
-            entry["example"], entry["note"], now_utc().isoformat(),
-        )
-        # DO SQL cursor has no last_insert_rowid — read it back (SQL is sync and
-        # private to this DO instance, so no race between INSERT and SELECT).
-        rows = list(self.storage.sql.exec("SELECT MAX(id) AS id FROM words"))
-        word_id = rows[0].id if rows else 0
-        self.storage.sql.exec(
-            "INSERT INTO cards (word_id, card_json, due) VALUES (?, ?, ?)",
-            word_id, fsrs_service.new_card_json(), now_utc().isoformat(),
-        )
-        return word_id
+            f" VALUES {cols} RETURNING id", *flat,
+        )]
+        if ids:
+            self.storage.sql.exec(
+                "INSERT INTO cards (word_id, card_json, due) VALUES "
+                + ", ".join("(?,?,?)" for _ in ids),
+                *[v for wid in ids for v in (wid, card_json, now)],
+            )
+        return len(ids)
 
     def word_row(self, word_id: int):
         rows = list(self.storage.sql.exec(
@@ -293,33 +321,26 @@ class VocabularyDO(DurableObject):
     # ---------- alarms (the 24/7 reminder engine) ----------
 
     def _pick_due(self):
-        now = now_utc().isoformat()
         rows = list(self.storage.sql.exec(
             "SELECT id, word_id, card_json, due FROM cards WHERE due <= ?"
             " ORDER BY due LIMIT 1",
-            now,
+            now_utc().isoformat(),
         ))
         return rows[0] if rows else None
 
-    def _next_future_due(self):
-        rows = list(self.storage.sql.exec(
-            "SELECT due FROM cards WHERE due > ? ORDER BY due LIMIT 1",
-            now_utc().isoformat(),
-        ))
-        if rows:
-            return datetime.fromisoformat(rows[0].due)
-        return None
-
     def _reschedule(self):
         """Next alarm: soon if cards are due, else next future due (delayed past
-        quiet hours). Nothing left -> clear the alarm."""
-        if self._pick_due() is not None:
-            self.storage.setAlarm(int(time.time() * 1000) + 60_000)
-            return
-        nxt = self._next_future_due()
-        if nxt is None:
+        quiet hours). Nothing left -> clear the alarm. One indexed query
+        (MIN(due) over the due index) instead of two sequential SELECTs."""
+        rows = list(self.storage.sql.exec("SELECT MIN(due) AS next_due FROM cards"))
+        next_due = rows[0].next_due if rows and rows[0].next_due else None
+        if next_due is None:
             self.storage.deleteAlarm()
             return
+        if next_due <= now_utc().isoformat():
+            self.storage.setAlarm(int(time.time() * 1000) + 60_000)
+            return
+        nxt = datetime.fromisoformat(next_due)
         self.storage.setAlarm(int(self.wake_time(nxt).timestamp() * 1000))
 
     async def alarm(self):

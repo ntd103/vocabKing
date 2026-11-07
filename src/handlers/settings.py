@@ -26,19 +26,19 @@ async def show(do, chat_id):
 async def set_mode(do, chat_id, message_id, mode: str):
     if mode not in MODE_LABELS:
         return
-    do.storage.kv.put("set:mode", mode)
+    do.put_setting("mode", mode)
     await edit_message(do.env, chat_id, message_id, texts.SETTINGS_MODE_SAVED.format(MODE_LABELS[mode]))
 
 
 async def set_quiet(do, chat_id, message_id, spec: str):
     if spec == "off":
-        do.storage.kv.put("set:quiet_start", "1")
-        do.storage.kv.put("set:quiet_end", "1")
+        do.put_setting("quiet_start", "1")
+        do.put_setting("quiet_end", "1")
     else:
         parts = spec.split(":")
         if len(parts) == 2 and all(p.isdigit() for p in parts):
-            do.storage.kv.put("set:quiet_start", str(int(parts[0])))
-            do.storage.kv.put("set:quiet_end", str(int(parts[1])))
+            do.put_setting("quiet_start", str(int(parts[0])))
+            do.put_setting("quiet_end", str(int(parts[1])))
         else:
             return
     await edit_message(do.env, chat_id, message_id, texts.SETTINGS_QUIET_SAVED.format(_quiet_label(do)))

@@ -148,6 +148,9 @@ async def rate(do, chat_id, message_id, card_id, rating_name: str):
     do.save_card(card_id, updated)
     do.log_review(card_id, rating_name)
     do.pop_session(message_id)
+    # New due may be the soonest of all cards — realign the alarm right away,
+    # instead of leaving the old (possibly far) alarm until it fires.
+    do._reschedule()
 
     word = do.word_row(card_row.word_id)
     body = texts.RATED_FEEDBACK.format(

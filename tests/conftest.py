@@ -57,19 +57,29 @@ class _Cur:
 
     def _execute(self):
         statements = [s.strip() for s in self._sql.split(";") if s.strip()]
-        cur = None
         wrote = False
+        raw = None
+        cols = []
         for stmt in statements:
             cur = self._conn.execute(stmt, self._args)
-            if stmt.upper().startswith(("INSERT", "UPDATE", "DELETE", "CREATE", "DROP")):
+            up = stmt.upper()
+            is_write = up.startswith(("INSERT", "UPDATE", "DELETE", "CREATE", "DROP")) or " RETURNING " in up
+            if is_write:
                 wrote = True
                 self.last_insert_rowid = cur.lastrowid or 0
-        if wrote:
-            self._conn.commit()
+            # A SELECT/RETURNING cursor must be fully drained (and closed) before
+            # the next statement runs — otherwise sqlite3 keeps a transaction
+            # open and the next write's commit fails with "statements in progress".
+            if cur.description:
+                cols = [d[0] for d in cur.description]
+                raw = cur.fetchall()
+            cur.close()
+            if is_write:
+                self._conn.commit()
+
+        if wrote and not raw:
             self._rows = []
             return
-        cols = [d[0] for d in cur.description or []]
-        raw = cur.fetchall()
 
         class Row:
             def __init__(self, d):
@@ -78,7 +88,7 @@ class _Cur:
             def __getitem__(self, k):
                 return self.__dict__[k]
 
-        self._rows = [Row(dict(zip(cols, r))) for r in raw]
+        self._rows = [Row(dict(zip(cols, r))) for r in (raw or [])]
 
     def one(self):
         if len(self._rows) != 1:

@@ -36,9 +36,7 @@ async def on_confirm(do, chat_id, message_id, action: str):
     fsm = do.storage.kv.get(f"fsm:{chat_id}")
     if fsm and fsm.get("flow") == "add_confirm" and action == "confirm":
         entries = fsm.get("entries", [])
-        for e in entries:
-            do.insert_word(int(do.env.OWNER_ID), e)
-        n = len(entries)
+        n = do.insert_words_bulk(int(do.env.OWNER_ID), entries)
         do.set_fsm(chat_id, None)
         await edit_message(do.env, chat_id, message_id, texts.ADD_CONFIRMED.format(n))
         # newly added cards are due immediately — schedule a reminder
