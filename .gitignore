@@ -15,3 +15,6 @@ security_env.md
 
 # Wrangler local state
 .wrangler/
+
+# Claude local worktrees / tooling
+.claude/
