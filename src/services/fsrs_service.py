@@ -20,9 +20,11 @@ RATINGS = {
 }
 
 
-def new_card_json() -> str:
-    """Serialize a fresh Card (due = now) to JSON for the cards table."""
-    return Card().to_json()
+def new_card_json(when: datetime | None = None) -> str:
+    """Seed a new card with an initial Hard grade so first recall follows FSRS."""
+    when = when or datetime.now(timezone.utc)
+    card, _ = review(Card(), "hard", when=when)
+    return card.to_json()
 
 
 def card_from_json(card_json: str) -> Card:

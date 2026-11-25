@@ -54,7 +54,7 @@ class TestWhitelist:
         do = _fresh()
         feed_msg(do, "/menu")
         assert send_count(do) == 1
-        assert "Vocaboss" in last_text(do)
+        assert "Vocabking" in last_text(do)
 
 
 def _fresh():
@@ -72,57 +72,65 @@ def _fresh():
 class TestAddFlow:
     def test_add_single_with_confirm(self):
         do = _fresh()
-        feed_msg(do, "/add hello|/həˈloʊ/|xin chào|Hi Paul|note")
-        assert "1 từ" in last_text(do)  # preview
+        feed_msg(do, "/add hello|/həˈloʊ/|a greeting|xin chào|Hi Paul|note")
+        assert "Preview (1)" in last_text(do)  # preview
         assert do.storage.data.get("fsm:111", {}).get("flow") == "add_confirm"
         feed_cb(do, "add:confirm")
-        assert "Đã thêm 1 từ" in last_text(do)
+        assert "Added: 1" in last_text(do)
         rows = list(do.storage.sql.exec("SELECT word, phonetic, meaning FROM words"))
         assert rows[0].word == "hello"
 
     def test_add_bulk_wrapped(self):
         do = _fresh()
-        feed_msg(do, "/add a1|m1\na2|m2|n2\na3|m3|n3")
-        assert "3 từ" in last_text(do)
+        feed_msg(do, "/add a1||def|m1\na2||def|m2\na3||def|m3")
+        assert "Preview (3)" in last_text(do)
         feed_cb(do, "add:confirm")
         words = [r.word for r in do.storage.sql.exec("SELECT word FROM words")]
         assert words == ["a1", "a2", "a3"]
 
     def test_add_cancel(self):
         do = _fresh()
-        feed_msg(do, "/add x|y")
+        feed_msg(do, "/add x||def|y")
         feed_cb(do, "add:cancel")
-        assert "huỷ" in last_text(do).lower()
+        assert "no words added" in last_text(do).lower()
         assert list(do.storage.sql.exec("SELECT 1 FROM words")) == []
 
     def test_add_via_fsm_input(self):
         do = _fresh()
         feed_msg(do, "/add")
-        assert "thêm từ" in last_text(do).lower()  # menu with lookup/manual options
-        feed_cb(do, "add:manual")
-        assert "mỗi dòng" in last_text(do).lower()
-        feed_msg(do, "solo|/soʊ/|một mình")
+        assert do.storage.kv.get("fsm:111")["flow"] == "add_ask_word"
+        feed_msg(do, "solo|/soʊ/|alone|một mình")
         feed_cb(do, "add:confirm")
         assert do.word_row(1).word == "solo"
 
-    def test_add_creates_card_due_now(self):
+    def test_add_creates_card_due_after_learning_step(self):
         do = _fresh()
-        feed_msg(do, "/add w1")
+        feed_msg(do, "/add word||definition|nghĩa")
         feed_cb(do, "add:confirm")
         card = do.get_card(1)
         due = dt.datetime.fromisoformat(card.due)
-        assert due <= dt.datetime.now(dt.timezone.utc) + dt.timedelta(seconds=1)
+        # New cards are seeded with an initial Hard grade (~5.5m on default FSRS).
+        assert dt.timedelta(minutes=5) < due - do._now() <= dt.timedelta(minutes=6)
+
+
+def make_cards_due(do):
+    from services import fsrs_service
+    for row in list(do.storage.sql.exec("SELECT id, card_json FROM cards")):
+        card = fsrs_service.card_from_json(row.card_json)
+        card.due = do._now() - dt.timedelta(seconds=1)
+        do.save_card(row.id, card)
 
 
 class TestDefinitionReviewFlow:
     def _add_and_prompt(self, do):
-        feed_msg(do, "/add hello|/həˈloʊ/|xin chào|Hi Paul|friendly")
+        feed_msg(do, "/add hello|/həˈloʊ/|a greeting|xin chào|Hi Paul|friendly")
         feed_cb(do, "add:confirm")
         do.put_setting("mode", "definition")
         do.env.sent.clear()
+        make_cards_due(do)
         feed_msg(do, "/study")
-        # find the prompt message (definition prompt asks "Nghĩa là gì?")
-        prompts = [s for s in do.env.sent if "Nghĩa là gì" in s["payload"].get("text", "")]
+        # find the prompt message (definition prompt asks "Type the missing word?")
+        prompts = [s for s in do.env.sent if "Type the missing word" in s["payload"].get("text", "")]
         assert prompts, f"no prompt in {sent_texts(do.env)}"
         prompt_id = prompts[0]["result"]["message_id"]
         return prompt_id
@@ -130,8 +138,8 @@ class TestDefinitionReviewFlow:
     def test_study_sends_prompt(self):
         do = _fresh()
         self._add_and_prompt(do)
-        # definition prompt has no keyboard (user replies with text)
-        assert "Nghĩa là gì" in last_text(do)
+        # quiz asks for the English vocabulary word
+        assert "Type the missing word" in last_text(do)
 
     def test_show_answer_then_rate(self):
         do = _fresh()
@@ -140,11 +148,11 @@ class TestDefinitionReviewFlow:
         do.env.sent.clear()
         # user replies to the prompt; bot reveals the answer with rate buttons
         feed_msg(do, "không biết", reply_to=prompt_id)
-        assert "Nghĩa:" in last_text(do) and "xin chào" in last_text(do)
+        assert "Incorrect." in last_text(do) and "xin chào" in last_text(do)
         # rate good
         old_due = dt.datetime.fromisoformat(do.get_card(card_id).due)
         feed_cb(do, f"rate:{card_id}:good", message_id=prompt_id)
-        assert "đã chấm" in last_text(do)
+        assert "Good" in last_text(do)
         new_due = dt.datetime.fromisoformat(do.get_card(card_id).due)
         assert new_due > old_due
         # review logged
@@ -152,20 +160,22 @@ class TestDefinitionReviewFlow:
 
     def test_rating_updates_fsm_alarm(self):
         do = _fresh()
-        self._add_and_prompt(do)
-        feed_cb(do, "rate:1:good", message_id=do.env.sent[-1]["payload"].get("message_id", 500))
+        mid = self._add_and_prompt(do)
+        feed_msg(do, "hello", reply_to=mid)
+        feed_cb(do, "rate:1:good", message_id=mid)
         # alarm rescheduled to future due
         assert do.storage.alarm is not None
 
 
 class TestClozeFlow:
     def _add_example_and_prompt(self, do):
-        feed_msg(do, "/add apple|/ˈæp.əl/|quả táo|An apple a day keeps the doctor away")
+        feed_msg(do, "/add apple|/ˈæp.əl/|a fruit|quả táo|An apple a day keeps the doctor away")
         feed_cb(do, "add:confirm")
         do.put_setting("mode", "cloze")
         do.env.sent.clear()
+        make_cards_due(do)
         feed_msg(do, "/study")
-        prompts = [s for s in do.env.sent if "Điền từ" in s["payload"].get("text", "")]
+        prompts = [s for s in do.env.sent if "Type the missing word" in s["payload"].get("text", "")]
         assert prompts, sent_texts(do.env)
         return prompts[0]["result"]["message_id"]
 
@@ -173,7 +183,8 @@ class TestClozeFlow:
         do = _fresh()
         mid = self._add_example_and_prompt(do)
         text = last_text(do)
-        assert "A_ a____ a d__ k____ t__ d_____ a___" in text  # first letters kept
+        assert "An a _ _ _ _ a day keeps the doctor away" in text
+        assert "quả táo" in text and "apple" not in text
 
     def test_cloze_hint_question_reveals(self):
         do = _fresh()
@@ -192,43 +203,45 @@ class TestClozeFlow:
     def test_cloze_answer_correct_and_rate(self):
         do = _fresh()
         mid = self._add_example_and_prompt(do)
-        feed_msg(do, "an apple a day keeps the doctor away", reply_to=mid)
-        assert "Chính xác" in last_text(do)
+        feed_msg(do, "apple", reply_to=mid)
+        assert "Correct!" in last_text(do)
         feed_cb(do, "rate:1:good", message_id=mid)
-        assert "đã chấm" in last_text(do)
+        assert "Good" in last_text(do)
 
     def test_cloze_answer_wrong(self):
         do = _fresh()
         mid = self._add_example_and_prompt(do)
         feed_msg(do, "something else entirely", reply_to=mid)
-        assert "Chưa đúng" in last_text(do)
+        assert "Incorrect." in last_text(do)
 
 
 class TestEditDeleteFlow:
     def test_edit_flow(self):
         do = _fresh()
-        feed_msg(do, "/add hello|xin chào")
+        feed_msg(do, "/add hello||greeting|xin chào")
         feed_cb(do, "add:confirm")
         do.env.sent.clear()
         feed_msg(do, "/edit hel")
-        # single match -> straight to field picker
-        assert "Chọn trường" in last_text(do)
+        # even a single result is a Markdown table before typed row selection
+        assert "| # | Word |" in last_text(do) and "hello" in last_text(do)
+        feed_msg(do, "hello")
+        assert "hello" in last_text(do)
         feed_cb(do, "editf:1:meaning")
-        assert "Gửi nội dung mới" in last_text(do)
+        assert "hello" in last_text(do)
         feed_msg(do, "xin chào đã sửa")
-        assert "Đã cập nhật" in last_text(do)
+        assert "Updated" in last_text(do)
         assert do.word_row(1).meaning == "xin chào đã sửa"
 
     def test_delete_flow(self):
         do = _fresh()
-        feed_msg(do, "/add goodbye|tạm biệt")
+        feed_msg(do, "/add goodbye||farewell|tạm biệt")
         feed_cb(do, "add:confirm")
         do.env.sent.clear()
         feed_msg(do, "/delete good")
-        feed_cb(do, "delw:1")
-        assert "Chắc chắn" in last_text(do)
+        feed_msg(do, "1")
+        assert "goodbye" in last_text(do)
         feed_cb(do, "del:confirm:1")
-        assert "Đã xoá" in last_text(do)
+        assert "Deleted" in last_text(do)
         assert do.word_row(1) is None
         assert do.get_card(1) is None
 
@@ -285,6 +298,59 @@ class TestSettings:
         feed_cb(do, "quiet:off")
         assert do.setting("quiet_start") == "1"
 
+    def test_custom_quiet_hours_input_updates_existing_message(self):
+        do = _fresh()
+        feed_msg(do, "/settings")
+        menu_id = do.env.sent[0]["result"]["message_id"]
+        feed_cb(do, "set:quiet", message_id=menu_id)
+        feed_cb(do, "quiet:custom", message_id=menu_id)
+        message_sends = sum(s["method"] == "sendMessage" for s in do.env.sent)
+        assert do.storage.data["fsm:111"]["flow"] == "set_quiet_start"
+        assert do.env.sent[-1]["payload"]["message_id"] == menu_id
+
+        feed_msg(do, "nonsense")
+        assert do.setting("quiet_start") == "23"
+        assert do.setting("quiet_end") == "7"
+        assert do.storage.data["fsm:111"]["flow"] == "set_quiet_start"
+        assert sum(s["method"] == "sendMessage" for s in do.env.sent) == message_sends
+        edits = [s for s in do.env.sent if s["method"] == "editMessageText"]
+        assert "start hour" in edits[-1]["payload"]["text"]
+
+        feed_msg(do, "24")
+        assert do.setting("quiet_start") == "23"
+        assert do.storage.data["fsm:111"]["flow"] == "set_quiet_start"
+        assert "0 to 23" in do.env.sent[-1]["payload"]["text"]
+
+        feed_msg(do, "22")
+        assert do.storage.data["fsm:111"]["flow"] == "set_quiet_end"
+        assert do.storage.data["fsm:111"]["quiet_start"] == 22
+
+        feed_msg(do, "23:00")
+        assert do.setting("quiet_start") == "23"
+        assert do.setting("quiet_end") == "7"
+        assert do.storage.data["fsm:111"]["flow"] == "set_quiet_end"
+        assert sum(s["method"] == "sendMessage" for s in do.env.sent) == message_sends
+
+        feed_msg(do, "6")
+        assert do.setting("quiet_start") == "22"
+        assert do.setting("quiet_end") == "6"
+        assert "fsm:111" not in do.storage.data
+        assert sum(s["method"] == "sendMessage" for s in do.env.sent) == message_sends
+        edits = [s for s in do.env.sent if s["method"] == "editMessageText"]
+        assert edits[-1]["payload"]["message_id"] == menu_id
+        assert "22:00 – 06:00" in edits[-1]["payload"]["text"]
+
+    def test_custom_quiet_hours_accepts_zero_and_23(self):
+        do = _fresh()
+        feed_msg(do, "/settings")
+        menu_id = do.env.sent[0]["result"]["message_id"]
+        feed_cb(do, "set:quiet", message_id=menu_id)
+        feed_cb(do, "quiet:custom", message_id=menu_id)
+        feed_msg(do, "0")
+        feed_msg(do, "23")
+        assert do.setting("quiet_start") == "0"
+        assert do.setting("quiet_end") == "23"
+
 
 class TestUnknownInput:
     def test_random_text_gets_hint(self):
@@ -292,29 +358,34 @@ class TestUnknownInput:
         feed_msg(do, "hello there")
         assert "chưa hiểu" in last_text(do).lower() or "menu" in last_text(do).lower()
 
-    def test_cancel_clears_fsm(self):
+    def test_cancel_returns_to_vocabulary_menu(self):
         do = _fresh()
         feed_msg(do, "/add")
         feed_msg(do, "/cancel")
-        assert "fsm:111" not in do.storage.data
+        assert do.storage.kv.get("fsm:111")["flow"] == "vocab_select"
+        assert "vact:edit" in str(do.env.sent[-1]["payload"])
 
 
 class TestAlarmFlow:
     def test_alarm_sends_prompt_when_due(self):
         do = _fresh()
-        feed_msg(do, "/add w1|m1")
+        feed_msg(do, "/add word||definition|m1")
         feed_cb(do, "add:confirm")
         do.put_setting("quiet_start", "1")
         do.put_setting("quiet_end", "1")  # quiet off (1..1)
+        make_cards_due(do)
+        do.set_fsm(111, None)
         do.env.sent.clear()
         asyncio.run(do.alarm())
         texts = sent_texts(do.env)
-        assert any("w1" in t for t in texts)  # prompt arrived via alarm
+        assert any("Type the missing word" in t for t in texts)
+        assert "w o r d" not in texts[-1]  # answer is hidden
 
     def test_alarm_reschedules_for_future_due(self):
         do = _fresh()
-        feed_msg(do, "/add w1|m1")
+        feed_msg(do, "/add word||definition|m1")
         feed_cb(do, "add:confirm")
+        do.set_fsm(111, None)
         from src.services import fsrs_service
 
         card = fsrs_service.card_from_json(do.get_card(1).card_json)
@@ -332,8 +403,10 @@ class TestAlarmFlow:
         quiet_time = dt.datetime(2026, 9, 17, 21, 0, tzinfo=dt.timezone.utc)  # 04:00+7
         monkeypatch.setattr(vocab_do, "now_utc", lambda: quiet_time)
         do = _fresh()
-        feed_msg(do, "/add w1|m1")
+        feed_msg(do, "/add word||definition|m1")
         feed_cb(do, "add:confirm")
+        make_cards_due(do)
+        do.set_fsm(111, None)  # home — reminders only fire outside an open dialog
         do.env.sent.clear()
         asyncio.run(do._alarm_tick())
         assert send_count(do) == 0
@@ -345,8 +418,121 @@ class TestAlarmFlow:
         day_time = dt.datetime(2026, 9, 17, 4, 0, tzinfo=dt.timezone.utc)  # 11:00+7
         monkeypatch.setattr(vocab_do, "now_utc", lambda: day_time)
         do = _fresh()
-        feed_msg(do, "/add w1|m1")
+        feed_msg(do, "/add word||definition|m1")
         feed_cb(do, "add:confirm")
+        make_cards_due(do)
+        do.set_fsm(111, None)
         do.env.sent.clear()
         asyncio.run(do._alarm_tick())
         assert send_count(do) == 1
+
+
+class TestVocabList:
+    def _seed(self, do, n=35):
+        import asyncio
+
+        for i in range(n):
+            feed_msg(do, f"/add word{i}|/w{i}/|definition|nghĩa {i}")
+            feed_cb(do, "add:confirm")
+        # /add wordN now routes to lookup (API fails in tests) -> insert directly
+        return n
+
+    def test_vocab_table_paginates(self):
+        do = _fresh()
+        n = do.insert_words_bulk(111, [
+            {"word": f"word{i}", "phonetic": None, "meaning": f"nghĩa {i}",
+             "example": None, "note": None} for i in range(35)
+        ])
+        feed_msg(do, "/vocab")
+        t = last_text(do)
+        assert "(35)" in t
+        markup = do.env.sent[-1]["payload"]["reply_markup"]["inline_keyboard"]
+        buttons = [b["callback_data"] for row in markup for b in row]
+        assert {"vact:edit", "vact:delete"}.issubset(buttons)
+        assert "menu:add" not in buttons and "vact:view" not in buttons
+        assert "Page 1/4" in t
+        assert "word0" in t and "word9" in t and "word10" not in t
+
+    def test_vocab_page2(self):
+        do = _fresh()
+        do.insert_words_bulk(111, [
+            {"word": f"word{i}", "phonetic": None, "meaning": f"nghĩa {i}",
+             "example": None, "note": None} for i in range(35)
+        ])
+        feed_cb(do, "vpg:3")
+        t = last_text(do)
+        assert "word30" in t and "Page 4/4" in t
+        assert "word14" not in t
+
+    def test_vocab_search_by_stt(self):
+        do = _fresh()
+        do.insert_words_bulk(111, [
+            {"word": f"word{i}", "phonetic": None, "meaning": f"nghĩa {i}",
+             "example": None, "note": None} for i in range(10)
+        ])
+        feed_msg(do, "/vocab")
+        feed_cb(do, "vsrch")
+        feed_msg(do, "3")
+        t = last_text(do)
+        assert "word2" in t  # stt 3 = word2 (0-based id 3rd)
+
+    def test_vocab_search_by_word(self):
+        do = _fresh()
+        do.insert_words_bulk(111, [
+            {"word": "hello", "phonetic": "/hə/", "meaning": "xin chào",
+             "example": "Hi there", "note": None},
+            {"word": "world", "phonetic": None, "meaning": "thế giới",
+             "example": None, "note": None},
+        ])
+        feed_cb(do, "vsrch", message_id=1)
+        feed_msg(do, "world")
+        t = last_text(do)
+        assert "world" in t and "thế giới" in t
+
+    def test_add_single_word_opens_en_confirm_or_format(self, monkeypatch):
+        """`/add hello` looks up EN definition, then asks agree/manual."""
+        from services import dict_service
+
+        async def fake_lookup(word):
+            return {"word": word, "phonetic": "", "pos": "", "definition": "a greeting", "example": ""}
+
+        monkeypatch.setattr(dict_service, "lookup", fake_lookup)
+        do = _fresh()
+        feed_msg(do, "/add hello")
+        assert do.storage.kv.get("fsm:111")["flow"] == "add_confirm_en"
+        assert "a greeting" in last_text(do)
+
+
+def test_second_do_wakeup_skips_schema_ddl():
+    from src.vocab_do import VocabularyDO
+
+    do = _fresh()
+    sql_calls = []
+    orig = do.ctx.storage.sql.exec
+    do.ctx.storage.sql.exec = lambda sql, *a: (sql_calls.append(sql), orig(sql, *a))[1]
+    VocabularyDO(do.ctx, do.env)
+    assert sql_calls == []
+
+
+def test_callback_runs_ack_and_edit_concurrently(monkeypatch):
+    import json
+    import types
+    import telegram as tg
+
+    do = _fresh()
+    in_flight = 0
+    max_in_flight = 0
+
+    async def tracked_fetch(url, method=None, headers=None, body=None):
+        nonlocal in_flight, max_in_flight
+        in_flight += 1
+        max_in_flight = max(max_in_flight, in_flight)
+        await asyncio.sleep(0.01)
+        in_flight -= 1
+        async def _json():
+            return {"ok": True, "result": {"message_id": 500}}
+        return types.SimpleNamespace(status=200, json=_json)
+
+    monkeypatch.setattr(tg, "fetch", tracked_fetch)
+    feed_cb(do, "menu:help", message_id=500)
+    assert max_in_flight >= 2

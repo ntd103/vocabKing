@@ -5,48 +5,61 @@
 
 ---
 
-## UC1 — Thêm từ bằng tra từ điển
+## Nghiệm thu hiện tại — ưu tiên hơn ví dụ lịch sử bên dưới
 
-**User story:** Với tư cách người học, tôi gõ 1 từ tiếng Anh, bot tự tra IPA +
-định nghĩa gốc, tôi tự gõ nghĩa tiếng Việt (để bắt buộc não phải xử lý từ),
-chọn ví dụ, và từ đó vào lịch ôn FSRS.
+- UI tiếng Anh; phím tắt xem [docs/guide.md](guide.md).
+- `/settings` → **Daily target** → nhập `250`: lưu mục tiêu, dọn tin chứa số nếu Telegram cho phép và sửa tin cũ thành menu chính.
+- **Quiet hours** → **Custom hours**: nhập lần lượt giờ bắt đầu, giờ kết thúc (0–23). Kiểm tra bước nhập sai không ghi đè cài đặt và kết quả vẫn nằm trong cùng tin.
+- **Games** → **Story challenge**: nhập số 1–20; kết quả là bảng `# | Word | Meaning`, không phải danh sách gạch đầu dòng.
+- **Vocabulary**: mở thẳng bảng 10 dòng/trang (Prev/Next); chỉ còn **Edit** / **Delete** / **Search** (Add nằm ở menu chính). Chọn dòng bằng STT hoặc tên từ.
+- Dialog chờ nhập tự đóng sau **15s** không phản hồi. Tin nhắc FSRS **không** dùng timeout đó; đang trong FSM thì không chen quiz.
 
-**Ví dụ:**
+### Kiểm tra quiz, lịch và tệp
 
-```
-User:  apple
-Bot:   🔍 apple /ˈæp.əl/ — noun
-       💡 A common, firm, round fruit produced by a tree of the genus Malus.
-       🇻🇳 Gõ nghĩa tiếng Việt cho apple:
-User:  quả táo
-Bot:   📝 Thêm ví dụ cho apple:
-       [📖 Lấy ví dụ từ điển] [✍️ Tự nhập ví dụ] [⏭ Bỏ qua ví dụ]
-User:  (bấm 📖)
-Bot:   (edit chính tin nhắn đó) → preview tổng hợp + [✅ Lưu từ] [❌ Huỷ]
-User:  (bấm ✅)
-Bot:   ✅ Đã thêm 1 từ! (Hôm nay: 1/200)
-```
+1. Thêm `continent`, nghĩa `châu lục`, ví dụ `Africa is a vast continent.`. Thẻ mới được seed **Hard** (khoảng ~5.5 phút trên lịch mặc định). Về menu chính trước khi đợi nhắc; kiểm tra với kho chỉ có một từ.
+2. Khi đến hạn, `/study` hoặc tin nhắc hiển thị `Africa is a vast c _ _ _ _ _ _ _ _.`. Gõ `?` để mở thêm chữ. Gõ từ để xem đúng/sai, sau đó bấm nút có thời gian (`Again (1m)` …) hoặc gõ `1`–`4`. `/help` và [guide.md](guide.md) có phím tắt.
+3. Với câu khác, gõ `???` hoặc bấm nút xem đáp án: hiện đầy đủ từ và tự chấm **Again** đúng một lần. Nếu đang nhập trong luồng khác, reply trực tiếp vào câu quiz (alarm không chen khi FSM còn mở).
+4. **Import / Export**: xuất tệp `.csv` hoặc `.json` có dấu thời gian; import bằng cách reply đúng tin nhắc với tệp UTF-8 hoặc dán nội dung rồi xác nhận. Cột bắt buộc: `word`, `define_en`, `meaning`; cột tuỳ chọn: `phonetic`, `example`, `note`, `pos`.
 
-**Cơ chế:**
-1. Tin nhắn không có lệnh `/`, không có dialog đang dở, toàn ký tự ASCII chữ
-   cái → được coi là từ cần tra → gọi `freedictionaryapi.com/api/v1/entries/en/{word}`
-   (fetch thật ra ngoài; lỗi/mất mạng → "Không tìm thấy").
-2. Bot lưu FSM `lookup_vi` (chứa kết quả API) trong KV — Worker stateless.
-3. Ý nghĩa VI user gõ tay — **không** dịch tự động (quyết định sản phẩm: tự gõ
-   = nhớ sâu hơn; IPA/def EN thì máy làm vì khách quan).
-4. Chọn ví dụ: `📖` lấy example trong response API (nếu API không có → tự
-   nhập), `✍️` hỏi user gõ, `⏭` bỏ qua.
-5. Lưu: 1 lần INSERT multi-row vào `words` + 1 lần vào `cards` (card FSRS mới,
-   `due = now`) → `daily.added` +1 → reschedule alarm.
+## Ghi chép lịch sử — 08/11/2026
 
-**Test kiểm tra:** gõ từ sai chính tả (`applee`) → "Không tìm thấy". Gõ từ có
-nghĩa → flow 4 bước. Mất mạng → không crash, chỉ báo không tìm thấy.
+Các mục từ đây trở xuống là ghi chép các phiên trước; dùng checklist nghiệm thu hiện tại ở đầu tài liệu khi có khác biệt.
+
+- `/add` / Menu Add: hỏi từ → lookup chỉ EN → Đồng ý(1)/Manual(2) → template pipe (điền phần thiếu) → preview. Miss API → thẳng template. Bulk: `/add từ|IPA|defineEN|nghĩaVI|ví dụ|note`. Không còn submenu Dictionary/Manual hay bare-word lookup.
+- `hello||greeting|xin chào|hello its me||`: IPA/note trống, EN=`greeting`, VI=`xin chào`, ví dụ=`hello its me`. Trim từng trường; không dịch chuyển trường trống. Dấu `|` trong note có nội dung được giữ.
+- SQLite: `define_en` chứa EN, `meaning` chứa VI. DB cũ được thêm cột EN nếu thiếu, giữ nguyên dữ liệu cũ. Preview, sửa từ, chi tiết và đáp án ôn tách EN/VI.
+- Quiz có nút **Gợi ý thêm chữ** và **Xem đáp án**; reply `?`/`???` vẫn hỗ trợ. Quiz gợi ý chữ của vocab EN, chỉ che vocab trong ví dụ. Chữ đã mở không bị che lại.
+- Reveal giữ session, chưa chấm FSRS. Chỉ rating hợp lệ trên đúng tin nhắn/session đã reveal  mới cập nhật card, log và lượt ôn. Bấm lặp sau khi chấm bị bỏ qua; lỗi ghi log rollback thay đổi card.
+- Chấm một card xong hiển thị menu ngay trong tin nhắn kết quả; chọn Ôn ngay để tiếp tục, không tự gửi card tiếp. Thêm tay, lưu/huỷ lookup, sửa xong và `/cancel` cũng có menu.
+- Chạy hồi quy: `uv run pytest -q`. Đây là kiểm thử SQLite/Telegram giả lập, không phải kiểm chứng production.
+
+### Trạng thái nghiệm thu TODO — 24/11/2026
+
+- Target/ngày, quiet hours (start/end), story table, preview từng field + icon, rating `1`–`4` / `?` / `???`, import/export file CSV+JSON, UI English — đã có.
+- **Vocabulary**: mở thẳng bảng GFM (`sendRichMessage`), `PAGE_SIZE = 10`, Prev/Next; chỉ Edit/Delete/Search trên bảng (Add ở menu chính). Chọn bằng STT hoặc tên từ; sai giữ trang; trùng tên → lọc để chọn STT. Xoá tất cả chỉ trong Delete + xác nhận. Chi tiết từ có Edit/Delete; xong quay đúng trang/filter.
+- Add: EN confirm → pipe format (word+EN+VI bắt buộc khi parse). FSM add không idle-timeout 15s.
+- Thẻ mới: `new_card_json` seed **Hard** (không chỉ delay `learning_steps[0]`). Idle FSM **15s**; pending review không timeout; alarm không chen khi FSM mở.
+- Xác minh local: `uv run --offline pytest -q` — **229 passed**.
+
+**Còn giới hạn:** clipping nội dung dài; delivery Telegram mạng không xác định. Chưa deploy / UAT Telegram thật (reply nhắc, nhận/upload file export).
+
+## UC1 — Thêm từ (auto EN + format pipe)
+
+**User story:** Thêm từ với định nghĩa EN từ từ điển (tuỳ chọn), rồi điền nốt các trường theo format pipe.
+
+1. Menu ➕ Add hoặc `/add` → hỏi từ. `/add hello` bỏ bước hỏi từ.
+2. Lookup chỉ lấy định nghĩa EN. Hiện EN + nút Đồng ý(1) / Manual(2).
+3. Đồng ý → template `word||EN|||`. Manual hoặc miss API → `word|||||`. User gõ dòng pipe (chỉ cần điền thiếu); EN+VI bắt buộc khi parse.
+4. Preview → confirm/cancel. Một bot message edit-in-place; FSM add không idle-timeout; lệnh khác bị bỏ qua tới khi xong/`/cancel`.
+5. Lưu ghi word/card, tăng daily.added và lên lịch.
+
+**Test:** đồng ý/manual/`1`/`2`; miss → format; bulk `|` bỏ lookup; tin format không timeout; `/study` lúc đang add không chen.
 
 ---
 
 ## UC2 — Thêm từ thủ công (bulk)
 
-**User story:** Tôi dán 1 danh sách từ theo format `từ|phiên âm|nghĩa|ví dụ|note`,
+**User story:** Tôi dán 1 danh sách từ theo format `từ|phiên âm|defineEN|nghĩaVI|ví dụ|note`,
 bot xem trước rồi mới lưu.
 
 **Ví dụ:**
@@ -57,9 +70,9 @@ Bot:   ➕ Thêm từ
        [🔍 Tra từ điển] [✍️ Nhập thủ công]
 User:  (bấm ✍️)
 Bot:   Gửi danh sách từ (mỗi dòng một từ):
-       từ|phiên âm|nghĩa|ví dụ|note
-User:  dog|/dɒɡ/|con chó|A dog barks| 
-       cat||con mèo
+       từ|phiên âm|defineEN|nghĩaVI|ví dụ|note
+User:  dog|/dɒɡ/|a domestic animal|con chó|A dog barks|
+       cat||a small animal|con mèo
 Bot:   📋 Xem trước 2 từ: ...  [✅ Thêm] [❌ Huỷ]
 User:  (bấm ✅)
 Bot:   ✅ Đã thêm 2 từ! (Hôm nay: 3/200)
@@ -76,81 +89,38 @@ từ → chỉ 1. Bấm ❌ → không ghi gì.
 
 ---
 
-## UC3 — Ôn theo lịch FSRS (quiz mode)
+## UC3 — Quiz vocab và chấm FSRS
 
-**User story:** Đến giờ, bot nhắc 1 từ; tôi trả lời, chấm mức nhớ, thuật toán
-FSRS tính lần nhắc tiếp theo.
+**User story:** Nhận nghĩa tiếng Việt và câu ví dụ khuyết đúng vocab; nhập vocab tiếng Anh, sau đó tự chấm mức nhớ.
 
-**Ví dụ (chế độ định nghĩa):**
-
-```
-Bot:   📖 elephant
-       Nghĩa là gì? 👇
-       (user reply tin nhắn này)
-User:  con voi
-Bot:   (edit tin nhắn) ✅ Chính xác! "elephant" 💡 con voi
-       [😖 Again] [🙁 Hard] [🙂 Good] [😎 Easy]
-User:  (bấm 🙂)
-Bot:   🔖 elephant — đã chấm Good
-       ⏰ Nhắc lại sau: vài phút (đang trong bước học)
-       📊 Hôm nay: 2/200
-       (bot tự gửi prompt từ kế tiếp nếu còn quota)
+```text
+Bot: 🇻🇳 quả táo
+     Điền từ tiếng Anh:
+     An _ _ _ _ _ a day keeps the doctor away
+     [Gợi ý thêm chữ] [Xem đáp án]
+User: apple
+Bot: (edit cùng tin) ✅ Chính xác! + thông tin EN/VI
+     [Again] [Hard] [Good] [Easy]
+User: Good
+Bot: (edit cùng tin) Kết quả + lịch tiếp theo + menu
 ```
 
-**Ví dụ (chế độ điền khuyết — cloze):**
+- Chỉ vocab bị che, không che các từ khác trong ví dụ. Khớp không phân biệt hoa/thường, có ranh giới từ; mọi lần xuất hiện đều được che. Ví dụ không chứa vocab thì bỏ ví dụ khỏi câu hỏi, dùng nghĩa VI và ô trống; không kiểm tra câu ví dụ thay cho vocab.
+- Ô trống hiển thị từng chữ cách 1 space; giữa hai từ cách 3 spaces: `make up` → `_ _ _ _   _ _`. Dùng monospace để giữ khoảng cách, kể cả sau hint.
+- Reply hoặc gõ trực tiếp đều nhận khi không có workflow khác. Gợi ý mở dần chữ của vocab; `?`/`???` vẫn hỗ trợ. Không tự chấm dựa trên đúng/sai: luôn hỏi Again/Hard/Good/Easy.
+- FSRS chỉ đổi sau rating hợp lệ; card JSON/due, log, daily count và đóng session trong cùng transaction. Bấm lặp không chấm lại. FSRS có fuzzing nên interval nhiều ngày có thể chênh nhẹ giữa hai phép tính độc lập.
+- Session được giữ cả sau đáp án để bắt buộc chấm. `/study` khi đang chờ phục hồi cùng câu hoặc cùng bảng chấm, không tạo quiz mới.
 
-```
-Bot:   Điền từ vào chỗ trống:
-       An a____ a day keeps the d____ a____
-       Gợi ý: quả táo
-       (user reply)
-User:  ?
-Bot:   An app__ a day ...   ← lộ thêm ~25% số chữ còn ẩn
-User:  ???
-Bot:   🔓 full answer + nghĩa + [4 nút chấm]
-```
+## UC4 — Nhắc tự động, một câu đang chờ
 
-**Cơ chế FSRS (quan trọng cho tester):**
-- Mỗi từ có 1 **Card FSRS** (state: stability, difficulty, due, last_review)
-  serialize JSON trong bảng `cards`.
-- **Again** → nhắc lại trong vài phút (cùng ngày).
-- **Hard/Good** vài lần đầu → learning steps, interval theo **phút** (không
-  phải ngày!) → đây là hành vi đúng của FSRS, không phải bug.
-- Sau khi ra khỏi learning steps, interval tăng theo ngày: ~1 → ~3 → ~7 →
-  ~15+... tùy lịch sử chấm.
-- **Easy** nhảy interval dài hơn so với Good cùng thời điểm.
-- Mỗi lần chấm: `reviews` +1 hàng (log), `cards.card_json` + `cards.due`
-  update, `daily.reviewed` +1.
-
-**Cơ chế hint `?`:** thuật toán **max-min-distance** — chữ mới lộ luôn nằm ở
-khoảng trống xa nhất so với chữ đã lộ (không dồn cụm). Khi nhiều vị trí xa
-nhau ngang nhau → **nguyên âm được ưu tiên** (a/e/i/o/u/y — lộ "khung" từ
-trước). Deterministic theo seed = card_id + số lần reveal → cùng trạng thái
-luôn render giống nhau. `?` mỗi lần lộ ~25% số chữ còn ẩn. `???` lộ hết.
-
-**Test kiểm tra:** chấm Again → nhắc lại rất sớm. Chấm Good 2 lần đầu →
-interval "vài phút". `?` nhiều lần → mỗi lần thấy thêm chữ, không bao giờ
-bớt chữ đã lộ. `???` → hiện đủ + nút chấm.
-
----
-
-## UC4 — Nhắc tự động 24/7 (alarm)
-
-**User story:** Tôi không cần nhớ ôn — bot tự gửi 1 từ đúng lịch, kể cả khi
-tôi không mở app Telegram.
-
-**Ví dụ:** 09:00 sáng bot tự nhắn prompt ôn từ `elephant` (đến hạn lúc 08:45).
-
-**Cơ chế:**
-- DO alarm API: sau mỗi review/add, `setAlarm(mốc due kế tiếp)`. Khi đến giờ,
-  runtime gọi `alarm()` → gửi prompt 1 từ (đúng 1, không spam).
-- **Giờ yên tĩnh** (mặc định 23:00–07:00 VN, đổi được): từ đến hạn ban đêm
-  bị dồn sang 7:00 sáng hôm sau.
-- Alarm chỉ retry 6 lần nếu handler fail — code catch + reschedule trong
-  `finally` để không mất nhắc.
-
-**Test:** set giờ yên tĩnh 00:00–06:00, chấm 1 từ Again lúc 01:00 → bot im
-lặng, 06:00 sáng nhận nhắc.
+- Chỉ một quiz đang chờ trên toàn bot. Lưu reservation KV trước khi gọi Telegram để alarm và `/study` đồng thời không gửi trùng.
+- Có quiz chưa trả lời **hoặc chưa chấm**: xoá alarm, không gửi thêm, không timeout tự bỏ câu. Khởi tạo lại DO vẫn giữ pending trong KV.
+- Chấm xong mới mở lại alarm: chọn ngẫu nhiên từ đã đến hạn; nếu chưa có thì chờ due gần nhất. Không nhắc từ vừa chấm trước due mới. Có nhiều từ quá hạn thì câu tiếp theo được nhắc khi slot hiện tại đã giải và chấm xong.
+- Giờ yên tĩnh áp dụng cả từ quá hạn. Hết quota thì chờ ngày local tiếp theo (và hết giờ yên tĩnh).
+- Target 200 là tổng số từ thêm + lượt chấm, **không** là số tin nhắc.
+- Xoá từ đang được hỏi thì đóng session cũ và mở lại lịch cho các từ còn lại.
+- Test hồi quy: 4 từ, gọi alarm 200 lần → chỉ 1 quiz; gọi lại sau restart vẫn 1; trả lời nhưng chưa chấm vẫn không có quiz tiếp.
+- Giới hạn: nếu mạng lỗi không biết Telegram đã nhận chưa, giữ reservation để ưu tiên không spam; chưa có tự phục hồi trường hợp delivery không xác định. Tin spam cũ từ phiên bản trước không tự xoá.
 
 ---
 
@@ -184,27 +154,9 @@ nghỉ. Ngày hôm sau (đổi clock) → quota lại đầy.
 
 ---
 
-## UC6 — Nhắc kiểu Full (lướt nhanh)
+## UC6 — Chế độ quiz thống nhất
 
-**User story:** Khi từ đã khá thuộc, tôi muốn bot gửi thẳng toàn bộ thông tin
-(nghĩa + ví dụ), tôi chỉ chấm mức nhớ mà không phải trả lời.
-
-**Ví dụ:**
-
-```
-Bot:   🔔 Ôn: apple
-       💡 Nghĩa: quả táo
-       📝 I eat an apple every morning
-       Tự chấm mức nhớ 👇
-       [😖 Again] [🙁 Hard] [🙂 Good] [😎 Easy]
-```
-
-**Cơ chế:** `reminder_mode = full` → `send_prompt` render full info + nút rate
-ngay (session mode `full` không nhận reply `?`/`???`). Chấm vẫn update FSRS
-đầy đủ như quiz mode.
-
-**Test:** đổi mode full trong /settings → /study → tin nhắn có sẵn nghĩa.
-Reply `?` vào tin full → bị bỏ qua (không phải cloze).
+Theo yêu cầu sửa ngày 08/11/2026, cả ôn thủ công và nhắc tự động dùng quiz VI → vocab EN. Tuỳ chọn Full và definition/cloze/mix cũ không còn hiển thị trong menu cài đặt; giá trị KV cũ không làm đảo chiều quiz.
 
 ---
 
@@ -226,38 +178,27 @@ Bot:   ✍️ Viết chuyện chêm — 3 từ
        Viết một câu hoặc đoạn ngắn chứa tất cả các từ trên...
 ```
 
-**Cơ chế:** `random.sample` trên toàn bộ `words` (1 query, không đụng FSRS —
-game không ảnh hưởng lịch ôn). Giới hạn 1–20 từ.
+**Cơ chế:** `SELECT word, meaning FROM words ORDER BY RANDOM() LIMIT ?` (1 query, không đụng FSRS —
+game không ảnh hưởng lịch ôn). Kết quả hiển thị bằng bảng GFM Markdown native (`| STT | Từ | Nghĩa |`) qua Rich Message trên cùng `message_id`; giới hạn 1–20 từ.
 
-**Test:** kho rỗng → "Kho từ đang trống". Gõ 100 → báo số không hợp lệ. Gõ 3
-khi kho có 5 từ → 3 từ ngẫu nhiên khác nhau mỗi lần gọi.
-
----
-
-## UC8 — Sửa / xoá từ
-
-**Ví dụ:**
-
-```
-User:  /edit app
-Bot:   (nếu 1 kết quả) ✏️ Sửa từ: apple — Chọn trường cần sửa: [Từ][Phiên âm][Nghĩa][Ví dụ][Note]
-User:  (bấm Nghĩa)
-Bot:   Gửi nội dung mới cho Nghĩa của apple:
-User:  quả táo đỏ
-Bot:   ✅ Đã cập nhật Nghĩa = quả táo đỏ
-```
-
-**Cơ chế:** search LIKE trên `word` + `meaning`, ≤10 kết quả, 1 kết quả thì
-thẳng sang chọn trường. Nhập `-` / `null` / `none` = xoá trắng trường đó.
-Xoá từ: cascade card + toàn bộ lịch sử review.
+**Test:** kho rỗng → "Kho từ đang trống". Gõ 100 hoặc chữ → báo số không hợp lệ ngay trên tin nhắn hiện tại. Gõ 3
+khi kho có 5 từ → bảng Markdown 3 từ ngẫu nhiên.
 
 ---
 
-## UC9 — Cài đặt
+## UC8 — Bảng tra cứu, xem, sửa và xoá (CRUD Phương án B)
 
-`/settings` 1 màn hình tổng quan → 4 mục (mỗi mục edit tại chỗ, có nút quay
-lại): Target/ngày (gõ số), Kiểu nhắc (quiz/full), Giờ yên tĩnh (3 preset),
-Chế độ ôn (definition/cloze/mix).
+- `/vocab` mở menu `📚 Kho từ vựng` với đủ 4 thao tác: `➕ Thêm từ`, `👁 Xem`, `✏️ Sửa`, `🗑 Xoá`, `🔎 Tìm kiếm`.
+- Chọn `👁 Xem`, `✏️ Sửa` (hoặc `/edit [kw]`), `🗑 Xoá` (hoặc `/delete [kw]`) hiển thị bảng GFM Markdown 30 từ/trang với 5 cột `#`, `Từ`, `IPA`, `Nghĩa`, `Hạn`, kèm nút `⬅️ Trước`, `➡️ Sau`, `🔎 Tìm kiếm`, `✖️ Bỏ lọc` (khi có filter), `◀️ Từ vựng`, `🏠 Menu`.
+- Chọn bản ghi bằng cách gõ **STT toàn cục** hoặc **tên từ** (kể cả khi chỉ có 1 kết quả vẫn hiển thị bảng trước). Gõ sai giữ nguyên bảng trang hiện tại kèm cảnh báo; trùng tên từ hiển thị các dòng trùng để chọn theo STT.
+- Xem: hiện đầy đủ 6 thuộc tính kèm icon + hạn ôn, có nút `✏️ Sửa` / `🗑 Xoá` cho chính bản ghi đang xem và `◀️ Danh sách`.
+- Sửa: chọn dòng → xem đủ 6 thuộc tính hiện tại kèm icon → dùng `✨ Điền thông tin thiếu` hoặc chọn trường `🔤 Từ` / `🔊 Phiên âm` / `🇬🇧 Nghĩa EN` / `🇻🇳 Nghĩa VI` / `📝 Ví dụ` / `ℹ️ Ghi chú` rồi nhập giá trị. Xong hoặc huỷ đều quay về đúng trang & bộ lọc của bảng trước đó.
+- Xoá: chọn dòng → xem chi tiết → `🗑 Xoá vĩnh viễn` hoặc `↩️ Giữ lại` (hoặc `🗑 Xoá tất cả` từ bảng Xoá). Xoá dòng cuối ở trang cuối tự động kẹp về trang hợp lệ trước đó.
+- Mọi bước bảng, tìm kiếm, chọn, xác nhận, huỷ đều edit cùng tin workflow (`text` ↔ `rich_message` tại chỗ), không xả tin nhắn mới.
+
+## UC9 — Cài đặt và dọn giao diện tạm
+
+Menu cài đặt hiện Target/ngày và Giờ yên tĩnh. Quiz dùng một hướng VI → EN. Add thủ công và tra dictionary giữ `message_id` xuyên suốt các bước để edit; `/cancel` sửa tin workflow thành menu nếu có ID. Không tự xoá tin người học hoặc lịch sử cũ.
 
 ---
 

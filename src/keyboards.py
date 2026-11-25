@@ -1,8 +1,8 @@
-"""Inline keyboard layouts. Every sub-screen has a back-to-menu button."""
+"""Inline keyboard layouts. Consistent leading icons across all screens."""
 
 from telegram import kb
 
-BACK_MENU = ("◀️ Menu", "menu:home")
+BACK_MENU = ("🏠 Menu", "menu:home")
 
 
 def with_back(rows: list[list[tuple[str, str]]]) -> list[list[dict]]:
@@ -12,100 +12,84 @@ def with_back(rows: list[list[tuple[str, str]]]) -> list[list[dict]]:
 
 MENU_KB = kb(
     [
-        [("📖 Ôn tập", "menu:study"), ("➕ Thêm từ", "menu:add")],
-        [("✏️ Sửa", "menu:edit"), ("🗑 Xoá", "menu:delete")],
-        [("🎮 Games", "menu:games")],
-        [("⚙️ Cài đặt", "menu:settings"), ("❓ Trợ giúp", "menu:help")],
+        [("📖 Review", "menu:study"), ("➕ Add words", "menu:add")],
+        [("📚 Vocabulary", "menu:vocab"), ("🎮 Games", "menu:games")],
+        [("⚙️ Settings", "menu:settings"), ("❓ Help", "menu:help")],
+        [("📤 Import / Export", "menu:import_export")],
     ]
 )
 
-ADD_MENU_KB = with_back(
+ADD_EN_KB = kb(
     [
-        [("🔍 Tra từ điển", "add:lookup"), ("✍️ Nhập thủ công", "add:manual")],
+        [("✅ Use EN definition (1)", "add:en_ok"), ("✍️ Manual (2)", "add:en_manual")],
+        [BACK_MENU],
+    ]
+)
+
+ADD_INPUT_KB = kb(
+    [
+        [("❌ Cancel", "add:cancel"), BACK_MENU],
     ]
 )
 
 GAMES_MENU_KB = with_back(
     [
-        [("✍️ Viết chuyện chêm", "game:story")],
+        [("✍️ Story challenge", "game:story")],
     ]
 )
 
 SETTINGS_MENU_KB = with_back(
     [
-        [("🎯 Target/ngày", "set:target"), ("🔔 Kiểu nhắc", "set:reminder")],
-        [("🌙 Giờ yên tĩnh", "set:quiet"), ("🔀 Chế độ ôn", "set:mode")],
+        [("🎯 Daily target", "set:target"), ("🌙 Quiet hours", "set:quiet")],
     ]
 )
 
 MODE_KB = kb(
     [
-        [("📖 Định nghĩa", "mode:definition"), ("🧩 Điền khuyết", "mode:cloze")],
-        [("🎲 Trộn ngẫu nhiên", "mode:mix")],
-        [("◀️ Cài đặt", "menu:settings")],
+        [("📖 Definition", "mode:definition"), ("🧩 Fill in the blank", "mode:cloze")],
+        [("🎲 Mixed", "mode:mix")],
+        [("◀️ Settings", "menu:settings")],
     ]
 )
 
 QUIET_KB = kb(
     [
         [("🌙 23:00–07:00", "quiet:23:7"), ("🌄 00:00–06:00", "quiet:0:6")],
-        [("☀️ Không yên tĩnh", "quiet:off")],
-        [("◀️ Cài đặt", "menu:settings")],
+        [("✏️ Custom hours", "quiet:custom")],
+        [("☀️ Turn off", "quiet:off")],
+        [("◀️ Settings", "menu:settings")],
     ]
 )
 
 REMINDER_KB = kb(
     [
-        [("🧩 Quiz (trả lời câu hỏi)", "remmode:quiz")],
-        [("📄 Full (xem luôn, vẫn chấm)", "remmode:full")],
-        [("◀️ Cài đặt", "menu:settings")],
+        [("🧩 Quiz", "remmode:quiz")],
+        [("📄 Full answer", "remmode:full")],
+        [("◀️ Settings", "menu:settings")],
     ]
 )
 
 CONFIRM_ADD_KB = kb(
     [
-        [("✅ Thêm", "add:confirm"), ("❌ Huỷ", "add:cancel")],
+        [("✅ Add", "add:confirm"), ("❌ Cancel", "add:cancel")],
     ]
 )
 
-EDIT_FIELDS_KB = kb(
-    [
-        [("🔤 Từ", "editf:{word}:word"), ("🔊 Phiên âm", "editf:{word}:phonetic")],
-        [("🇻🇳 Nghĩa", "editf:{word}:meaning"), ("📝 Ví dụ", "editf:{word}:example")],
-        [("ℹ️ Note", "editf:{word}:note")],
-        [BACK_MENU],
-    ]
-)
 
-LOOKUP_EXAMPLE_KB = kb(
-    [
-        [("📖 Lấy ví dụ từ điển", "lkex:api"), ("✍️ Tự nhập ví dụ", "lkex:manual")],
-        [("⏭ Bỏ qua ví dụ", "lkex:skip")],
-    ]
-)
-
-CONFIRM_LOOKUP_KB = kb(
-    [
-        [("✅ Lưu từ", "lksv:ok"), ("❌ Huỷ", "lksv:no")],
-    ]
-)
-
-SHOW_ANSWER_KB = kb([[("👁 Hiện đáp án", "show:{card}")]])
+def delete_all_confirm_kb() -> list[list[dict]]:
+    return kb(
+        [
+            [("🗑 Delete permanently", "delall:confirm"), ("↩️ Keep", "delall:cancel")],
+        ]
+    )
 
 
 def kb_back_menu() -> list[list[dict]]:
     return kb([[BACK_MENU]])
 
 
-def fmt_rate_kb(card_id) -> list[list[dict]]:
-    return [
-        [
-            {"text": "😖 Again", "callback_data": f"rate:{card_id}:again"},
-            {"text": "🙁 Hard", "callback_data": f"rate:{card_id}:hard"},
-        ],
-        [
-            {"text": "🙂 Good", "callback_data": f"rate:{card_id}:good"},
-            {"text": "😎 Easy", "callback_data": f"rate:{card_id}:easy"},
-        ],
-        [{"text": "◀️ Menu", "callback_data": "menu:home"}],
-    ]
+def fmt_rate_kb(card_id, intervals) -> list[list[dict]]:
+    ratings = (("😖", "again"), ("🙁", "hard"), ("🙂", "good"), ("😎", "easy"))
+    buttons = [(f"{icon} {rating.title()} ({intervals[rating]})", f"rate:{card_id}:{rating}")
+               for icon, rating in ratings]
+    return kb([buttons[:2], buttons[2:], [BACK_MENU]])

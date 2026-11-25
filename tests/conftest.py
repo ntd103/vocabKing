@@ -47,7 +47,8 @@ def _install_workers_stub():
 class _Cur:
     """Cursor over sqlite3 results mimicking DO storage SQL API."""
 
-    def __init__(self, conn, sql, args):
+    def __init__(self, conn, sql, args, commit=True):
+        self._commit = commit
         self._conn = conn
         self._sql = sql
         self._args = args
@@ -74,7 +75,7 @@ class _Cur:
                 cols = [d[0] for d in cur.description]
                 raw = cur.fetchall()
             cur.close()
-            if is_write:
+            if is_write and self._commit:
                 self._conn.commit()
 
         if wrote and not raw:
@@ -102,9 +103,10 @@ class _Cur:
 class _SQL:
     def __init__(self):
         self.conn = sqlite3.connect(":memory:")
+        self.transaction = False
 
     def exec(self, sql, *args):
-        return _Cur(self.conn, sql, args)
+        return _Cur(self.conn, sql, args, commit=not self.transaction)
 
 
 class _KV:
@@ -138,6 +140,21 @@ class _Storage(_KV):
         self.kv = self
         self.sql = _SQL()
 
+    def transactionSync(self, callback):
+        from copy import deepcopy
+        before = deepcopy(self.data)
+        self.sql.transaction = True
+        try:
+            result = callback()
+            self.sql.conn.commit()
+            return result
+        except Exception:
+            self.sql.conn.rollback()
+            self.data = before
+            raise
+        finally:
+            self.sql.transaction = False
+
 
 class _Ctx:
     def __init__(self):
@@ -163,13 +180,28 @@ def _patch_telegram_fetch(env: FakeEnv):
 
     async def fake_fetch(url, method=None, headers=None, body=None):
         import json
+        import re
 
-        payload = json.loads(body)
         m = url.split("/bot")[1].split("/")[1]
         result = {}
-        if m == "sendMessage":
-            result = {"message_id": 1000 + len(env.sent), "chat": {"id": payload["chat_id"]}}
+        if isinstance(body, (bytes, bytearray)):
+            text = body.decode("utf-8", errors="replace")
+            chat = re.search(r'name="chat_id"\r\n\r\n([^\r\n]+)', text)
+            name = re.search(r'filename="([^"]+)"', text)
+            payload = {
+                "chat_id": chat.group(1) if chat else None,
+                "document": name.group(1) if name else None,
+                "raw_len": len(body),
+                "content_type": (headers or {}).get("Content-Type"),
+            }
+            if m == "sendDocument":
+                result = {"message_id": 1000 + len(env.sent), "document": {"file_name": payload["document"]}}
+        else:
+            payload = json.loads(body)
+            if m in ("sendMessage", "sendRichMessage"):
+                result = {"message_id": 1000 + len(env.sent), "chat": {"id": payload["chat_id"]}}
         env.sent.append({"method": m, "payload": payload, "result": dict(result)})
+
         async def _json():
             return {"ok": True, "result": result}
 
@@ -230,7 +262,10 @@ def make_update_cb(data, chat_id=111, user_id=111, message_id=500):
 
 
 def sent_texts(env):
-    return [s["payload"].get("text", "") for s in env.sent]
+    return [
+        s["payload"].get("text") or s["payload"].get("rich_message", {}).get("markdown", "")
+        for s in env.sent
+    ]
 
 
 def last_message_id(env):

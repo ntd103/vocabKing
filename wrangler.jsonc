@@ -7,8 +7,8 @@
   "vars": {
     // Telegram user ID of the bot owner (whitelist). Get yours from @userinfobot.
     // TODO: replace with your real ID before deploy — "0" disables the bot.
-    "OWNER_ID": "111",
-    "OWNER_CHAT_ID": "111",
+    "OWNER_ID": "6608549738",
+    "OWNER_CHAT_ID": "6608549738",
     "TZ_OFFSET_HOURS": "7"
   },
   "durable_objects": {
